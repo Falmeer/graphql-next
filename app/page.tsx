@@ -5,11 +5,15 @@ import React from "react";
 const DOMAIN = "learn.reboot01.com";
 
 type Transaction = {
-  id?: number;
-  type?: string;
+  id?: number | null;
+  type?: string | null;
   amount: number;
   createdAt: string;
-  path?: string;
+  path?: string | null;
+  object?: {
+    name?: string | null;
+    type?: string | null;
+  } | null;
 };
 
 type Skill = {
@@ -20,6 +24,36 @@ type Skill = {
 type ProjectXpItem = {
   project: string;
   xp: number;
+};
+
+type UserQueryData = {
+  user: Array<{ id: number; login: string; auditRatio?: number | null }>;
+};
+
+type LatestXpGainQueryData = {
+  transaction: Transaction[];
+};
+
+type TotalXpAggregateQueryData = {
+  transaction_aggregate: {
+    aggregate: {
+      sum: {
+        amount: number | null;
+      } | null;
+    };
+  };
+};
+
+type XpTimelineQueryData = {
+  transaction: Array<Pick<Transaction, "amount" | "createdAt" | "path">>;
+};
+
+type SkillsQueryData = {
+  transaction: Array<{ type: string; amount: number }>;
+};
+
+type ObjectByIdQueryData = {
+  object: Array<{ id: number; name: string; type: string }>;
 };
 
 async function signin(identifier: string, password: string) {
@@ -39,7 +73,7 @@ async function signin(identifier: string, password: string) {
         Accept: "application/json",
       },
     });
-  } catch (e) {
+  } catch {
     throw new Error("Network error contacting signin endpoint.");
   }
 
@@ -63,7 +97,7 @@ async function signin(identifier: string, password: string) {
     const text = await res.text();
     try {
       data = JSON.parse(text);
-    } catch (e) {
+    } catch {
       data = text;
     }
   }
@@ -86,7 +120,12 @@ async function signin(identifier: string, password: string) {
   return token;
 }
 
-async function graphqlQuery(
+type GraphQLResponse<TData> = {
+  data?: TData;
+  errors?: unknown;
+};
+
+async function graphqlQuery<TData extends Record<string, unknown>>(
   jwt: string,
   query: string,
   variables: Record<string, unknown> = {}
@@ -100,14 +139,18 @@ async function graphqlQuery(
     body: JSON.stringify({ query, variables }),
   });
 
-  const json = await res.json();
+  const json = (await res.json()) as GraphQLResponse<TData>;
 
   if (json.errors) {
     console.error("GraphQL errors:", json.errors);
     throw new Error("GraphQL query error.");
   }
 
-  return json.data as Record<string, any>;
+  if (!json.data) {
+    throw new Error("GraphQL response missing data.");
+  }
+
+  return json.data;
 }
 
 function formatWithK(value: number) {
@@ -138,8 +181,8 @@ function XpTimelineGraph({
         ts: Number.isFinite(ts) ? ts : null,
       };
     })
-    .filter((t) => t.ts !== null)
-    .sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
+    .filter((t): t is { amount: number; ts: number } => t.ts !== null)
+    .sort((a, b) => a.ts - b.ts);
 
   if (parsed.length === 0) {
     return (
@@ -149,12 +192,12 @@ function XpTimelineGraph({
     );
   }
 
-  let cumulative = 0;
-  const points = parsed.map((t) => {
+  const points = parsed.reduce<Array<{ ts: number; y: number }>>((acc, t) => {
     const gain = Math.max(0, t.amount);
-    cumulative += gain;
-    return { ts: t.ts as number, y: cumulative };
-  });
+    const prevY = acc.length ? acc[acc.length - 1].y : 0;
+    acc.push({ ts: t.ts, y: prevY + gain });
+    return acc;
+  }, []);
 
   const width = 400;
   const height = 220;
@@ -187,7 +230,7 @@ function XpTimelineGraph({
   const formatTick = (ts: number) => {
     try {
       return new Date(ts).toISOString().slice(0, 10);
-    } catch (e) {
+    } catch {
       return "";
     }
   };
@@ -354,9 +397,16 @@ function LoginView({ onLogin }: { onLogin: (token: string) => void }) {
       setLoading(true);
       const token = await signin(identifier.trim(), password);
       onLogin(token);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
-      setError(err?.message || "Login failed. Please try again.");
+      let message = "Login failed. Please try again.";
+      if (err instanceof Error) message = err.message;
+      else if (typeof err === "string") message = err;
+      else if (err && typeof err === "object") {
+        const maybeMessage = (err as { message?: unknown }).message;
+        if (typeof maybeMessage === "string") message = maybeMessage;
+      }
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -451,7 +501,11 @@ function LoginView({ onLogin }: { onLogin: (token: string) => void }) {
 }
 
 function ProfileView({ jwt, onLogout }: { jwt: string; onLogout: () => void }) {
-  const [user, setUser] = React.useState<{ id: number; login: string; auditRatio?: number } | null>(null);
+  const [user, setUser] = React.useState<{
+    id: number;
+    login: string;
+    auditRatio?: number | null;
+  } | null>(null);
   const [totalXp, setTotalXp] = React.useState(0);
   const [xpTransactions, setXpTransactions] = React.useState<Transaction[]>([]);
   const [xpByProject, setXpByProject] = React.useState<ProjectXpItem[]>([]);
@@ -468,7 +522,9 @@ function ProfileView({ jwt, onLogout }: { jwt: string; onLogout: () => void }) {
         setLoading(true);
         setError("");
 
-        const userData = await graphqlQuery(
+        // QUERY 1 (basic / non-nested): Get the authenticated user's basic info.
+        // Purpose: show identification on the profile + read auditRatio for display.
+        const userData = await graphqlQuery<UserQueryData>(
           jwt,
           `{
             user {
@@ -486,7 +542,10 @@ function ProfileView({ jwt, onLogout }: { jwt: string; onLogout: () => void }) {
           throw new Error("Could not resolve authenticated user id.");
         }
 
-        const lastXpGainData = await graphqlQuery(
+        // QUERY 2 (nested + variables/arguments): Get the latest XP transaction for THIS user.
+        // Purpose: show the most recent XP gain (project name, date, amount).
+        // Notes: uses GraphQL variables ($userId) + filtering (where) + sorting + limit.
+        const lastXpGainData = await graphqlQuery<LatestXpGainQueryData>(
           jwt,
           `query ($userId: Int!) {
             transaction(
@@ -509,6 +568,10 @@ function ProfileView({ jwt, onLogout }: { jwt: string; onLogout: () => void }) {
               amount
               createdAt
               path
+              object {
+                name
+                type
+              }
             }
           }`,
           { userId: me.id }
@@ -517,7 +580,9 @@ function ProfileView({ jwt, onLogout }: { jwt: string; onLogout: () => void }) {
         if (cancelled) return;
         setLastXpGain((lastXpGainData.transaction && lastXpGainData.transaction[0]) || null);
 
-        const xpData = await graphqlQuery(
+        // QUERY 3 (aggregate query + variables): Compute TOTAL XP for THIS user.
+        // Purpose: show one number (total XP) using transaction_aggregate -> sum(amount).
+        const xpData = await graphqlQuery<TotalXpAggregateQueryData>(
           jwt,
           `query ($userId: Int!) {
             transaction_aggregate(
@@ -550,7 +615,10 @@ function ProfileView({ jwt, onLogout }: { jwt: string; onLogout: () => void }) {
             xpData.transaction_aggregate.aggregate.sum.amount) || 0;
         setTotalXp(total);
 
-        const xpTimelineData = await graphqlQuery(
+        // QUERY 4 (list query + variables): Fetch XP transactions over time for a graph.
+        // Purpose: build an SVG timeline graph (xp vs time) + group XP by project path.
+        // Notes: ordered ascending so the graph progresses left-to-right.
+        const xpTimelineData = await graphqlQuery<XpTimelineQueryData>(
           jwt,
           `query ($userId: Int!) {
             transaction(
@@ -593,7 +661,10 @@ function ProfileView({ jwt, onLogout }: { jwt: string; onLogout: () => void }) {
         );
 
         try {
-          const skillsData = await graphqlQuery(
+          // QUERY 5 (list query + variables + distinct_on): Fetch top skills.
+          // Purpose: show "skill_*" transactions, keeping the best (max amount) per skill type.
+          // Notes: distinct_on + order_by chooses the highest amount for each skill type.
+          const skillsData = await graphqlQuery<SkillsQueryData>(
             jwt,
             `query ($userId: Int!) {
               transaction(
@@ -612,7 +683,7 @@ function ProfileView({ jwt, onLogout }: { jwt: string; onLogout: () => void }) {
           if (!cancelled) {
             const rows = skillsData.transaction || [];
             const normalized = rows
-              .map((r: any) => ({
+              .map((r) => ({
                 type: String(r.type || ""),
                 amount: Number(r.amount) || 0,
               }))
@@ -627,7 +698,9 @@ function ProfileView({ jwt, onLogout }: { jwt: string; onLogout: () => void }) {
         }
 
         try {
-          const objectData = await graphqlQuery(
+          // QUERY 6 (with variables/arguments): Example "object by id" query.
+          // Purpose: demonstrate argument-based filtering (where id = $id).
+          const objectData = await graphqlQuery<ObjectByIdQueryData>(
             jwt,
             `query ($id: Int!) {
               object(where: { id: { _eq: $id } }) {
@@ -642,10 +715,17 @@ function ProfileView({ jwt, onLogout }: { jwt: string; onLogout: () => void }) {
         } catch (innerErr) {
           console.error("Error loading object example:", innerErr);
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         console.error("Error loading profile:", err);
         if (!cancelled) {
-          setError(err?.message || "Unknown error while loading profile.");
+          let message = "Unknown error while loading profile.";
+          if (err instanceof Error) message = err.message;
+          else if (typeof err === "string") message = err;
+          else if (err && typeof err === "object") {
+            const maybeMessage = (err as { message?: unknown }).message;
+            if (typeof maybeMessage === "string") message = maybeMessage;
+          }
+          setError(message);
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -672,7 +752,9 @@ function ProfileView({ jwt, onLogout }: { jwt: string; onLogout: () => void }) {
       .toUpperCase();
   const lastXpPath = lastXpGain && lastXpGain.path ? lastXpGain.path : "";
   const lastPassedName =
-    (lastXpPath ? lastXpPath.split("/").filter(Boolean).slice(-1)[0] : "") || "—";
+    (lastXpGain?.object?.name && String(lastXpGain.object.name).trim()) ||
+    (lastXpPath ? lastXpPath.split("/").filter(Boolean).slice(-1)[0] : "") ||
+    "—";
   const lastXpAmount =
     lastXpGain && typeof lastXpGain.amount !== "undefined" ? lastXpGain.amount : "—";
   const lastXpDate = lastXpGain && lastXpGain.createdAt ? lastXpGain.createdAt.slice(0, 10) : "—";
@@ -823,12 +905,9 @@ function ProfileView({ jwt, onLogout }: { jwt: string; onLogout: () => void }) {
 }
 
 export default function App() {
-  const [jwt, setJwt] = React.useState<string | null>(null);
-
-  React.useEffect(() => {
-    const stored = localStorage.getItem("jwt");
-    if (stored) setJwt(stored);
-  }, []);
+  const [jwt, setJwt] = React.useState<string | null>(() =>
+    typeof window !== "undefined" ? localStorage.getItem("jwt") : null
+  );
 
   const handleLogin = (token: string) => {
     localStorage.setItem("jwt", token);
