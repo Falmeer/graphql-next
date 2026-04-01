@@ -1,0 +1,854 @@
+"use client";
+
+import React from "react";
+
+const DOMAIN = "learn.reboot01.com";
+
+type Transaction = {
+  id?: number;
+  type?: string;
+  amount: number;
+  createdAt: string;
+  path?: string;
+};
+
+type Skill = {
+  type: string;
+  amount: number;
+};
+
+type ProjectXpItem = {
+  project: string;
+  xp: number;
+};
+
+async function signin(identifier: string, password: string) {
+  const cleanIdentifier = (identifier || "").trim();
+  if (!cleanIdentifier || !password) {
+    throw new Error("Missing username/email or password.");
+  }
+
+  const basicToken = btoa(`${cleanIdentifier}:${password}`);
+
+  let res: Response;
+  try {
+    res = await fetch(`https://${DOMAIN}/api/auth/signin`, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${basicToken}`,
+        Accept: "application/json",
+      },
+    });
+  } catch (e) {
+    throw new Error("Network error contacting signin endpoint.");
+  }
+
+  if (!res.ok) {
+    const bodyText = await res.text().catch(() => "");
+    if (res.status === 401 || res.status === 403) {
+      throw new Error("Invalid credentials.");
+    }
+    throw new Error(
+      `Signin failed (${res.status} ${res.statusText})` +
+        (bodyText ? `: ${bodyText}` : "")
+    );
+  }
+
+  const contentType = res.headers.get("content-type") || "";
+  let data: unknown;
+
+  if (contentType.includes("application/json")) {
+    data = await res.json();
+  } else {
+    const text = await res.text();
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      data = text;
+    }
+  }
+
+  let token: string | undefined;
+  if (typeof data === "string") {
+    token = data;
+  } else if (data && typeof data === "object") {
+    const record = data as Record<string, string>;
+    token = record.jwt || record.token || record.access_token;
+  }
+
+  if (!token) {
+    throw new Error(
+      "Could not find JWT in response. Raw response: " +
+        JSON.stringify(data)
+    );
+  }
+
+  return token;
+}
+
+async function graphqlQuery(
+  jwt: string,
+  query: string,
+  variables: Record<string, unknown> = {}
+) {
+  const res = await fetch(`https://${DOMAIN}/api/graphql-engine/v1/graphql`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${jwt}`,
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+
+  const json = await res.json();
+
+  if (json.errors) {
+    console.error("GraphQL errors:", json.errors);
+    throw new Error("GraphQL query error.");
+  }
+
+  return json.data as Record<string, any>;
+}
+
+function formatWithK(value: number) {
+  const abs = Math.abs(value);
+  if (abs < 1000) return `${Math.round(value)}`;
+  const scaled = value / 1000;
+  return `${scaled.toFixed(1)}K`;
+}
+
+function XpTimelineGraph({
+  transactions,
+}: {
+  transactions: Transaction[];
+}) {
+  if (!transactions || transactions.length === 0) {
+    return (
+      <div id="graph-xp-by-project" className="graph-container">
+        <p>No XP data available.</p>
+      </div>
+    );
+  }
+
+  const parsed = transactions
+    .map((t) => {
+      const ts = Date.parse(t.createdAt);
+      return {
+        amount: Number(t.amount) || 0,
+        ts: Number.isFinite(ts) ? ts : null,
+      };
+    })
+    .filter((t) => t.ts !== null)
+    .sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
+
+  if (parsed.length === 0) {
+    return (
+      <div id="graph-xp-by-project" className="graph-container">
+        <p>No XP timestamps available.</p>
+      </div>
+    );
+  }
+
+  let cumulative = 0;
+  const points = parsed.map((t) => {
+    const gain = Math.max(0, t.amount);
+    cumulative += gain;
+    return { ts: t.ts as number, y: cumulative };
+  });
+
+  const width = 400;
+  const height = 220;
+  const padding = 40;
+
+  const minT = points[0].ts;
+  const maxT = points[points.length - 1].ts;
+  const rangeT = Math.max(1, maxT - minT);
+
+  const maxY = points.reduce((max, p) => Math.max(max, p.y), 0) || 1;
+  const scaleX = (width - 2 * padding) / rangeT;
+  const scaleY = (height - 2 * padding) / maxY;
+  const yTicks = [0, maxY * 0.25, maxY * 0.5, maxY * 0.75, maxY];
+
+  const polyPoints = points
+    .map((p) => {
+      const x = padding + (p.ts - minT) * scaleX;
+      const y = height - padding - p.y * scaleY;
+      return `${x},${y}`;
+    })
+    .join(" ");
+
+  const tickTimes = [
+    minT,
+    minT + rangeT * 0.25,
+    minT + rangeT * 0.5,
+    minT + rangeT * 0.75,
+    maxT,
+  ];
+  const formatTick = (ts: number) => {
+    try {
+      return new Date(ts).toISOString().slice(0, 10);
+    } catch (e) {
+      return "";
+    }
+  };
+
+  return (
+    <div id="graph-xp-by-project" className="graph-container">
+      <svg viewBox={`0 0 ${width} ${height}`}>
+        <line
+          x1={padding}
+          y1={padding}
+          x2={padding}
+          y2={height - padding}
+          stroke="rgba(0,255,156,0.9)"
+          strokeWidth="1.5"
+        />
+        <line
+          x1={padding}
+          y1={height - padding}
+          x2={width - padding}
+          y2={height - padding}
+          stroke="rgba(0,255,156,0.5)"
+        />
+
+        {yTicks.map((v, idx) => {
+          const y = height - padding - v * scaleY;
+          return (
+            <g key={`xp-y-${idx}`}>
+              <line
+                x1={padding - 4}
+                y1={y}
+                x2={padding}
+                y2={y}
+                stroke="rgba(0,255,156,0.9)"
+              />
+              <text
+                x={padding - 8}
+                y={y + 3}
+                textAnchor="end"
+                fontSize="9"
+                fill="rgba(0,255,156,0.9)"
+              >
+                {formatWithK(v)}
+              </text>
+            </g>
+          );
+        })}
+        <polyline points={polyPoints} fill="none" stroke="blue" strokeWidth="2" />
+        {points.map((p, idx) => {
+          const x = padding + (p.ts - minT) * scaleX;
+          const y = height - padding - p.y * scaleY;
+          return <circle key={idx} cx={x} cy={y} r={3} fill="blue" />;
+        })}
+
+        {tickTimes.map((ts, idx) => {
+          const x = padding + (ts - minT) * scaleX;
+          const y = height - padding + 14;
+          const label = formatTick(ts);
+          return (
+            <text
+              key={`xptick-${idx}`}
+              x={x}
+              y={y}
+              textAnchor={
+                idx === 0 ? "start" : idx === tickTimes.length - 1 ? "end" : "middle"
+              }
+              fontSize="7"
+              fill="rgba(229,254,244,0.55)"
+            >
+              {label}
+            </text>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+function XpByProjectHorizontalBarChart({
+  items,
+}: {
+  items: ProjectXpItem[];
+}) {
+  if (!items || items.length === 0) {
+    return (
+      <div id="graph-xp-by-module-project" className="graph-container">
+        <p>No bh_module project XP data available.</p>
+      </div>
+    );
+  }
+
+  const sortedItems = [...items].sort((a, b) => b.xp - a.xp);
+  const maxXp = Math.max(1, ...sortedItems.map((i) => i.xp));
+
+  return (
+    <div
+      id="graph-xp-by-module-project"
+      className="graph-container"
+      style={{ minHeight: "320px", height: "330px", alignItems: "stretch" }}
+    >
+      <div
+        style={{
+          display: "grid",
+          gap: "12px",
+          width: "100%",
+          height: "100%",
+          overflowY: "auto",
+          paddingRight: "4px",
+        }}
+      >
+        {sortedItems.map((item) => {
+          const widthPct = Math.max(2, Math.round((item.xp / maxXp) * 100));
+          return (
+            <div key={item.project}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: "10px",
+                  fontSize: "11px",
+                  marginBottom: "3px",
+                }}
+              >
+                <span style={{ color: "var(--text-main)" }}>{item.project}</span>
+                <span style={{ color: "var(--text-muted)" }}>{formatWithK(item.xp)}</span>
+              </div>
+              <div
+                style={{
+                  width: "100%",
+                  height: "14px",
+                  borderRadius: "999px",
+                  background: "rgba(0, 255, 156, 0.12)",
+                  border: "1px solid rgba(0, 255, 156, 0.18)",
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    width: `${widthPct}%`,
+                    height: "100%",
+                    background: "linear-gradient(135deg, var(--accent), var(--accent-strong))",
+                  }}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function LoginView({ onLogin }: { onLogin: (token: string) => void }) {
+  const [identifier, setIdentifier] = React.useState("");
+  const [password, setPassword] = React.useState("");
+  const [error, setError] = React.useState("");
+  const [loading, setLoading] = React.useState(false);
+
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setError("");
+    if (!identifier || !password) return;
+
+    try {
+      setLoading(true);
+      const token = await signin(identifier.trim(), password);
+      onLogin(token);
+    } catch (err: any) {
+      console.error(err);
+      setError(err?.message || "Login failed. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <section id="login-view">
+      <header className="app-header">
+        <div className="brand">
+          <div className="brand-logo">&gt;</div>
+          <div className="brand-text">
+            <h1>REBOOT01 // PROFILE</h1>
+            <p>GraphQL hacking console • Access restricted</p>
+          </div>
+        </div>
+        <div className="status-chip">
+          <span className="status-dot" />
+          STATUS: AWAITING AUTH
+        </div>
+      </header>
+
+      <div className="login-main">
+        <div className="login-hero">
+          <h2 className="login-hero-title">
+            AUTH<span>()</span> &amp; QUERY<span>()</span>
+          </h2>
+          <p className="login-hero-sub">
+            Use your Reboot01 <strong>username/email</strong> &amp;{" "}
+            <strong>password</strong> to retrieve a JWT, then the console will
+            fire GraphQL queries to <span> learn.reboot01.com</span>.
+          </p>
+
+          <div className="login-terminal">
+            <div className="term-line">
+              <span>&gt; booting environment...</span>
+            </div>
+            <div className="term-line">
+              <span>&gt; target:</span> https://learn.reboot01.com/api/graphql-engine/v1/graphql
+            </div>
+            <div className="term-line">
+              <span>&gt; proto:</span> JWT Bearer &amp; GraphQL
+            </div>
+            <div className="term-line">
+              <span>&gt; waiting for credentials</span>
+              <span className="cursor" />
+            </div>
+          </div>
+        </div>
+
+        <div className="login-form-card">
+          <h2>LOGIN CONSOLE</h2>
+          <p className="hint">
+            Input <strong>username or email</strong> and <strong>password</strong> to request a token.
+          </p>
+
+          <form id="login-form" onSubmit={handleSubmit}>
+            <label htmlFor="login-identifier">USERNAME / EMAIL</label>
+            <input
+              type="text"
+              id="login-identifier"
+              autoComplete="username"
+              placeholder="username or email"
+              value={identifier}
+              onChange={(e) => setIdentifier(e.target.value)}
+              required
+            />
+
+            <label htmlFor="login-password">PASSWORD</label>
+            <input
+              type="password"
+              id="login-password"
+              autoComplete="current-password"
+              placeholder="••••••••"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+
+            <button type="submit" disabled={loading}>
+              {loading ? "AUTHENTICATING..." : "INITIATE LOGIN"}
+            </button>
+          </form>
+          {error && (
+            <p id="login-error" className="error">
+              {error}
+            </p>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ProfileView({ jwt, onLogout }: { jwt: string; onLogout: () => void }) {
+  const [user, setUser] = React.useState<{ id: number; login: string; auditRatio?: number } | null>(null);
+  const [totalXp, setTotalXp] = React.useState(0);
+  const [xpTransactions, setXpTransactions] = React.useState<Transaction[]>([]);
+  const [xpByProject, setXpByProject] = React.useState<ProjectXpItem[]>([]);
+  const [skills, setSkills] = React.useState<Skill[]>([]);
+  const [lastXpGain, setLastXpGain] = React.useState<Transaction | null>(null);
+  const [error, setError] = React.useState("");
+  const [loading, setLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    let cancelled = false;
+
+    async function loadProfile() {
+      try {
+        setLoading(true);
+        setError("");
+
+        const userData = await graphqlQuery(
+          jwt,
+          `{
+            user {
+              id
+              login
+              auditRatio
+            }
+          }`
+        );
+
+        if (cancelled) return;
+        const me = userData.user && userData.user[0];
+        setUser(me || null);
+        if (!me?.id) {
+          throw new Error("Could not resolve authenticated user id.");
+        }
+
+        const lastXpGainData = await graphqlQuery(
+          jwt,
+          `query ($userId: Int!) {
+            transaction(
+              where: {
+                userId: { _eq: $userId }
+                type: { _eq: "xp" }
+                _or: [
+                  { path: { _ilike: "%/bh_module/%" } }
+                  { path: { _ilike: "%/bh-module/%" } }
+                ]
+                _and: [
+                  { path: { _nilike: "%piscine%" } }
+                  { path: { _nilike: "%piscene%" } }
+                ]
+              }
+              order_by: { createdAt: desc }
+              limit: 1
+            ) {
+              id
+              amount
+              createdAt
+              path
+            }
+          }`,
+          { userId: me.id }
+        );
+
+        if (cancelled) return;
+        setLastXpGain((lastXpGainData.transaction && lastXpGainData.transaction[0]) || null);
+
+        const xpData = await graphqlQuery(
+          jwt,
+          `query ($userId: Int!) {
+            transaction_aggregate(
+              where: {
+                userId: { _eq: $userId }
+                type: { _eq: "xp" }
+                _or: [
+                  { path: { _ilike: "%/bh_module/%" } }
+                  { path: { _ilike: "%/bh-module/%" } }
+                ]
+                _and: [
+                  { path: { _nilike: "%piscine%" } }
+                  { path: { _nilike: "%piscene%" } }
+                ]
+              }
+            ) {
+              aggregate {
+                sum {
+                  amount
+                }
+              }
+            }
+          }`,
+          { userId: me.id }
+        );
+
+        if (cancelled) return;
+        const total =
+          (xpData.transaction_aggregate.aggregate.sum &&
+            xpData.transaction_aggregate.aggregate.sum.amount) || 0;
+        setTotalXp(total);
+
+        const xpTimelineData = await graphqlQuery(
+          jwt,
+          `query ($userId: Int!) {
+            transaction(
+              where: {
+                userId: { _eq: $userId }
+                type: { _eq: "xp" }
+                _or: [
+                  { path: { _ilike: "%/bh_module/%" } }
+                  { path: { _ilike: "%/bh-module/%" } }
+                ]
+                _and: [
+                  { path: { _nilike: "%piscine%" } }
+                  { path: { _nilike: "%piscene%" } }
+                ]
+              }
+              order_by: { createdAt: asc }
+              limit: 200
+            ) {
+              amount
+              createdAt
+              path
+            }
+          }`,
+          { userId: me.id }
+        );
+
+        if (cancelled) return;
+        const xpRows = xpTimelineData.transaction || [];
+        setXpTransactions(xpRows);
+
+        const byProject = new Map<string, number>();
+        for (const row of xpRows) {
+          const path = typeof row.path === "string" ? row.path : "";
+          const project = path.split("/").filter(Boolean).slice(-1)[0] || "unknown";
+          const amount = Math.max(0, Number(row.amount) || 0);
+          byProject.set(project, (byProject.get(project) || 0) + amount);
+        }
+        setXpByProject(
+          Array.from(byProject.entries()).map(([project, xp]) => ({ project, xp }))
+        );
+
+        try {
+          const skillsData = await graphqlQuery(
+            jwt,
+            `query ($userId: Int!) {
+              transaction(
+                distinct_on: type
+                where: { userId: { _eq: $userId }, type: { _like: "skill_%" } }
+                order_by: [{ type: asc }, { amount: desc }]
+                limit: 12
+              ) {
+                type
+                amount
+              }
+            }`,
+            { userId: me.id }
+          );
+
+          if (!cancelled) {
+            const rows = skillsData.transaction || [];
+            const normalized = rows
+              .map((r: any) => ({
+                type: String(r.type || ""),
+                amount: Number(r.amount) || 0,
+              }))
+              .filter((r: Skill) => r.type.startsWith("skill_"))
+              .sort((a: Skill, b: Skill) => b.amount - a.amount);
+
+            setSkills(normalized);
+          }
+        } catch (innerErr) {
+          console.error("Error loading skills:", innerErr);
+          if (!cancelled) setSkills([]);
+        }
+
+        try {
+          const objectData = await graphqlQuery(
+            jwt,
+            `query ($id: Int!) {
+              object(where: { id: { _eq: $id } }) {
+                id
+                name
+                type
+              }
+            }`,
+            { id: 1 }
+          );
+          console.log("Example object(by id) result:", objectData.object);
+        } catch (innerErr) {
+          console.error("Error loading object example:", innerErr);
+        }
+      } catch (err: any) {
+        console.error("Error loading profile:", err);
+        if (!cancelled) {
+          setError(err?.message || "Unknown error while loading profile.");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    if (jwt) {
+      loadProfile();
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [jwt]);
+
+  const userLogin = user ? user.login : "loading_user...";
+  const userId = user ? user.id : "…";
+  const currentAuditRatio = Number(user?.auditRatio) || 0;
+  const topSkillAmount = skills.reduce((m, s) => Math.max(m, s.amount), 0) || 1;
+  const formatSkillName = (type: string) =>
+    String(type || "")
+      .replace(/^skill_/, "")
+      .replace(/_/g, " ")
+      .toUpperCase();
+  const lastXpPath = lastXpGain && lastXpGain.path ? lastXpGain.path : "";
+  const lastPassedName =
+    (lastXpPath ? lastXpPath.split("/").filter(Boolean).slice(-1)[0] : "") || "—";
+  const lastXpAmount =
+    lastXpGain && typeof lastXpGain.amount !== "undefined" ? lastXpGain.amount : "—";
+  const lastXpDate = lastXpGain && lastXpGain.createdAt ? lastXpGain.createdAt.slice(0, 10) : "—";
+  const passedProjects = xpByProject.filter((p) => p.project !== "unknown" && p.xp > 0);
+  const totalProjectsPassed = passedProjects.length;
+  const topProject = passedProjects.reduce<ProjectXpItem | null>(
+    (best, item) => (!best || item.xp > best.xp ? item : best),
+    null
+  );
+
+  return (
+    <section id="profile-view">
+      <header>
+        <div className="profile-title-block">
+          <h1 id="user-login">{userLogin}</h1>
+          <p id="user-subtitle">Reboot01 Bahrain • My GraphQL journey</p>
+        </div>
+        <button id="logout-btn" onClick={onLogout}>
+          LOGOUT
+        </button>
+      </header>
+
+      {error && (
+        <section
+          id="profile-error"
+          className="card"
+          style={{ border: "1px solid #ff5555", color: "#ff5555" }}
+        >
+          <strong>Profile load error:</strong> <span>{error}</span>
+        </section>
+      )}
+
+      <section className="info-sections">
+        <div className="card">
+          <h2>BASIC USER DATA</h2>
+          <p>
+            <strong>ID:</strong> <span id="user-id">{userId}</span>
+          </p>
+          <p>
+            <strong>LOGIN:</strong> <span id="user-login-info">{userLogin}</span>
+          </p>
+        </div>
+
+        <div className="card">
+          <h2>Current XP and AuditRatio</h2>
+          <p>
+            <strong>XP:</strong> <span id="total-xp">{Math.round(totalXp).toLocaleString()}</span>
+          </p>
+          <p>
+            <strong>AUDIT RATIO:</strong>{" "}
+            <span>{currentAuditRatio > 0 ? currentAuditRatio.toFixed(1) : "—"}</span>
+          </p>
+        </div>
+
+        <div className="card">
+          <h2>LAST PROJECT PASSED</h2>
+          <p>
+            <strong>PROJECT:</strong> <span>{lastPassedName}</span>
+          </p>
+          <p>
+            <strong>XP:</strong>{" "}
+            <span>{lastXpAmount === "—" ? "—" : formatWithK(Number(lastXpAmount) || 0)}</span>
+          </p>
+          <p>
+            <strong>XP DATE:</strong> <span>{lastXpDate}</span>
+          </p>
+        </div>
+
+        <div className="card">
+          <h2>PROJECT SUMMARY</h2>
+          <p>
+            <strong>TOTAL PROJECTS PASSED:</strong> <span>{totalProjectsPassed}</span>
+          </p>
+          <p>
+            <strong>HIGHEST XP PROJECT:</strong>{" "}
+            <span>{topProject ? `${topProject.project} (${formatWithK(topProject.xp)})` : "—"}</span>
+          </p>
+        </div>
+      </section>
+
+      <div className="card">
+        <h2>SKILLS</h2>
+        {skills.length === 0 ? (
+          <p className="hint">No skill transactions found.</p>
+        ) : (
+          <div>
+            {skills.slice(0, 6).map((s) => (
+              <div key={s.type} style={{ margin: "6px 0" }}>
+                <p style={{ display: "flex", justifyContent: "space-between", gap: "10px" }}>
+                  <span>{formatSkillName(s.type)}</span>
+                  <span style={{ color: "var(--text-muted)" }}>{Math.round(s.amount)}</span>
+                </p>
+                <div
+                  style={{
+                    height: "6px",
+                    borderRadius: "999px",
+                    background: "rgba(0, 255, 156, 0.12)",
+                    border: "1px solid rgba(0, 255, 156, 0.18)",
+                    overflow: "hidden",
+                  }}
+                >
+                  <div
+                    style={{
+                      height: "100%",
+                      width: `${Math.max(2, Math.round((s.amount / topSkillAmount) * 100))}%`,
+                      background: "linear-gradient(135deg, var(--accent), var(--accent-strong))",
+                    }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <section id="stats-section">
+        <div id="stats-section-header">
+          <div>
+            <h2>STATISTICS</h2>
+            <small>Live view of your Reboot01 journey via GraphQL data.</small>
+          </div>
+        </div>
+
+        <div className="graph-grid">
+          <div>
+            <div className="graph-label" style={{ color: "#00ff9c", marginBottom: "8px" }}>
+              Cumulative XP over time
+            </div>
+            <XpTimelineGraph transactions={xpTransactions} />
+          </div>
+
+          <div>
+            <div className="graph-label" style={{ color: "#00ff9c", marginBottom: "8px" }}>
+              XP gained by project
+            </div>
+            <XpByProjectHorizontalBarChart items={xpByProject} />
+          </div>
+        </div>
+      </section>
+
+      {loading && !error && (
+        <p style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "6px" }}>
+          Loading profile data...
+        </p>
+      )}
+    </section>
+  );
+}
+
+export default function App() {
+  const [jwt, setJwt] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    const stored = localStorage.getItem("jwt");
+    if (stored) setJwt(stored);
+  }, []);
+
+  const handleLogin = (token: string) => {
+    localStorage.setItem("jwt", token);
+    setJwt(token);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem("jwt");
+    setJwt(null);
+  };
+
+  const isAuthenticated = Boolean(jwt);
+
+  return (
+    <main id="app" className={isAuthenticated ? "app--profile" : "app--login"}>
+      {isAuthenticated ? (
+        <ProfileView jwt={jwt as string} onLogout={handleLogout} />
+      ) : (
+        <LoginView onLogin={handleLogin} />
+      )}
+    </main>
+  );
+}
