@@ -324,59 +324,87 @@ function XpByProjectHorizontalBarChart({
   const sortedItems = [...items].sort((a, b) => b.xp - a.xp);
   const maxXp = Math.max(1, ...sortedItems.map((i) => i.xp));
 
+  // SVG chart sizing (kept simple + scrollable inside the container)
+  const width = 560;
+  const rowHeight = 26;
+  const paddingTop = 18;
+  const paddingBottom = 18;
+  const labelWidth = 220;
+  const valueWidth = 70;
+  const barGap = 10;
+  const barStartX = labelWidth;
+  const barMaxWidth = width - labelWidth - valueWidth - barGap;
+  const height = paddingTop + sortedItems.length * rowHeight + paddingBottom;
+
   return (
     <div
       id="graph-xp-by-module-project"
       className="graph-container"
       style={{ minHeight: "320px", height: "330px", alignItems: "stretch" }}
     >
-      <div
-        style={{
-          display: "grid",
-          gap: "12px",
-          width: "100%",
-          height: "100%",
-          overflowY: "auto",
-          paddingRight: "4px",
-        }}
-      >
-        {sortedItems.map((item) => {
-          const widthPct = Math.max(2, Math.round((item.xp / maxXp) * 100));
-          return (
-            <div key={item.project}>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  gap: "10px",
-                  fontSize: "11px",
-                  marginBottom: "3px",
-                }}
-              >
-                <span style={{ color: "var(--text-main)" }}>{item.project}</span>
-                <span style={{ color: "var(--text-muted)" }}>{formatWithK(item.xp)}</span>
-              </div>
-              <div
-                style={{
-                  width: "100%",
-                  height: "14px",
-                  borderRadius: "999px",
-                  background: "rgba(0, 255, 156, 0.12)",
-                  border: "1px solid rgba(0, 255, 156, 0.18)",
-                  overflow: "hidden",
-                }}
-              >
-                <div
-                  style={{
-                    width: `${widthPct}%`,
-                    height: "100%",
-                    background: "linear-gradient(135deg, var(--accent), var(--accent-strong))",
-                  }}
+      <div style={{ width: "100%", height: "100%", overflowY: "auto" }}>
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          style={{ width: "100%", height: `${height}px`, display: "block" }}
+          role="img"
+          aria-label="XP by project (horizontal bar chart)"
+        >
+          <defs>
+            <linearGradient id="xpBarGradient" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stopColor="var(--accent)" />
+              <stop offset="100%" stopColor="var(--accent-strong)" />
+            </linearGradient>
+          </defs>
+
+          {sortedItems.map((item, idx) => {
+            const y = paddingTop + idx * rowHeight;
+            const barWidth = Math.max(2, Math.round((item.xp / maxXp) * barMaxWidth));
+            const label = String(item.project || "unknown");
+            const value = formatWithK(item.xp);
+
+            return (
+              <g key={item.project}>
+                <text
+                  x={0}
+                  y={y + 16}
+                  fontSize="11"
+                  fill="var(--text-main)"
+                  textAnchor="start"
+                >
+                  {label}
+                </text>
+
+                <rect
+                  x={barStartX}
+                  y={y + 5}
+                  width={barMaxWidth}
+                  height={14}
+                  rx={7}
+                  fill="rgba(0, 255, 156, 0.12)"
+                  stroke="rgba(0, 255, 156, 0.18)"
                 />
-              </div>
-            </div>
-          );
-        })}
+                <rect
+                  x={barStartX}
+                  y={y + 5}
+                  width={barWidth}
+                  height={14}
+                  rx={7}
+                  fill="url(#xpBarGradient)"
+                />
+
+                <text
+                  x={barStartX + barMaxWidth + barGap}
+                  y={y + 16}
+                  fontSize="11"
+                  fill="var(--text-muted)"
+                  textAnchor="start"
+                >
+                  {value}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
       </div>
     </div>
   );
