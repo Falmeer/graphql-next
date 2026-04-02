@@ -873,7 +873,7 @@ function ProfileView({ jwt, onLogout }: { jwt: string; onLogout: () => void }) {
         </div>
       </section>
 
-      <div className="card">
+      <div className="card skills-card">
         <h2>SKILLS (TOP 10)</h2>
         {skills.length === 0 ? (
           <p className="hint">No skill transactions found.</p>

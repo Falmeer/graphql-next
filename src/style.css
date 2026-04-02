@@ -496,13 +496,23 @@ button {
 /* Skills list: keep it scrollable without getting "stuck" inside the page scroll */
 .skills-scroll {
   width: 100%;
-  max-height: 175px;
+  max-height: 120px;
   overflow-y: auto;
   padding-right: 6px;
   padding-bottom: 12px;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   -webkit-overflow-scrolling: touch;
+}
+
+/* Keep Skills visible when viewport height is tight (profile uses flex column) */
+.skills-card {
+  flex: 0 0 auto;
+  min-height: 170px;
+}
+
+.skills-card .skills-scroll {
+  min-height: 120px;
 }
 
 /* STATS SECTION */
@@ -610,5 +620,13 @@ button {
   .app-header {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .skills-card {
+    min-height: 210px;
+  }
+
+  .skills-card .skills-scroll {
+    max-height: 165px;
   }
 }
