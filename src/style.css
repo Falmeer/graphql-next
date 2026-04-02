@@ -70,7 +70,47 @@ body::before {
 /* Make the profile view board larger without affecting the login view size */
 #app.app--profile {
   max-width: 1280px;
-  min-height: 700px;
+  /* Keep profile from overflowing the viewport at 100% zoom */
+  min-height: 560px;
+
+  /* Ensure min-height never beats max-height on shorter screens */
+  min-height: 0;
+  height: calc(100vh - 48px);
+  height: calc(100svh - 48px);
+  max-height: calc(100vh - 48px);
+  max-height: calc(100svh - 48px);
+}
+
+/* Slightly tighter layout for profile only (login stays the same) */
+#app.app--profile > section {
+  padding: 18px 18px 16px;
+  gap: 16px;
+}
+
+/* Compact the profile content so it fits better vertically */
+#app.app--profile #profile-view {
+  gap: 16px;
+}
+
+#app.app--profile #profile-view header {
+  padding: 4px 6px 0;
+}
+
+#app.app--profile .info-sections {
+  gap: 12px;
+}
+
+#app.app--profile .card {
+  padding: 10px 10px 8px;
+}
+
+#app.app--profile #stats-section {
+  padding: 10px 10px 8px;
+  gap: 8px;
+}
+
+#app.app--profile .graph-container {
+  min-height: 120px;
 }
 
 #app::before {
@@ -451,6 +491,18 @@ button {
 
 .card strong {
   color: var(--text-muted);
+}
+
+/* Skills list: keep it scrollable without getting "stuck" inside the page scroll */
+.skills-scroll {
+  width: 100%;
+  max-height: 175px;
+  overflow-y: auto;
+  padding-right: 6px;
+  padding-bottom: 12px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* STATS SECTION */

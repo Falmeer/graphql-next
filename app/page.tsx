@@ -45,7 +45,7 @@ type TotalXpAggregateQueryData = {
 };
 
 type XpTimelineQueryData = {
-  transaction: Array<Pick<Transaction, "amount" | "createdAt" | "path">>;
+  transaction: Array<Pick<Transaction, "amount" | "createdAt" | "path" | "object">>;
 };
 
 type SkillsQueryData = {
@@ -668,6 +668,10 @@ function ProfileView({ jwt, onLogout }: { jwt: string; onLogout: () => void }) {
               amount
               createdAt
               path
+              object {
+                name
+                type
+              }
             }
           }`,
           { userId: me.id }
@@ -679,10 +683,16 @@ function ProfileView({ jwt, onLogout }: { jwt: string; onLogout: () => void }) {
 
         const byProject = new Map<string, number>();
         for (const row of xpRows) {
+          // Only count real projects (exclude checkpoints/other object types)
+          if (row.object?.type !== "project") continue;
+
           const path = typeof row.path === "string" ? row.path : "";
-          const project = path.split("/").filter(Boolean).slice(-1)[0] || "unknown";
+          const projectName =
+            (row.object?.name && String(row.object.name).trim()) ||
+            path.split("/").filter(Boolean).slice(-1)[0] ||
+            "unknown";
           const amount = Math.max(0, Number(row.amount) || 0);
-          byProject.set(project, (byProject.get(project) || 0) + amount);
+          byProject.set(projectName, (byProject.get(projectName) || 0) + amount);
         }
         setXpByProject(
           Array.from(byProject.entries()).map(([project, xp]) => ({ project, xp }))
@@ -699,7 +709,7 @@ function ProfileView({ jwt, onLogout }: { jwt: string; onLogout: () => void }) {
                 distinct_on: type
                 where: { userId: { _eq: $userId }, type: { _like: "skill_%" } }
                 order_by: [{ type: asc }, { amount: desc }]
-                limit: 12
+                limit: 200
               ) {
                 type
                 amount
@@ -718,7 +728,7 @@ function ProfileView({ jwt, onLogout }: { jwt: string; onLogout: () => void }) {
               .filter((r: Skill) => r.type.startsWith("skill_"))
               .sort((a: Skill, b: Skill) => b.amount - a.amount);
 
-            setSkills(normalized);
+              setSkills(normalized.slice(0, 10));
           }
         } catch (innerErr) {
           console.error("Error loading skills:", innerErr);
@@ -864,12 +874,12 @@ function ProfileView({ jwt, onLogout }: { jwt: string; onLogout: () => void }) {
       </section>
 
       <div className="card">
-        <h2>SKILLS</h2>
+        <h2>SKILLS (TOP 10)</h2>
         {skills.length === 0 ? (
           <p className="hint">No skill transactions found.</p>
         ) : (
-          <div>
-            {skills.slice(0, 6).map((s) => (
+          <div className="skills-scroll">
+            {skills.map((s) => (
               <div key={s.type} style={{ margin: "6px 0" }}>
                 <p style={{ display: "flex", justifyContent: "space-between", gap: "10px" }}>
                   <span>{formatSkillName(s.type)}</span>
